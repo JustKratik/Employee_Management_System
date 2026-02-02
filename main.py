@@ -1,98 +1,70 @@
-import re
-import requests
-from flask import Flask, request, jsonify
-# python
-import re
-import requests
-from flask import Flask, request, jsonify, send_from_directory
+import os
+from flask import Flask, jsonify, request, send_file
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="static")
 
-API_KEY = "AIzaSyABdKbscWXikb6aO5iHDwNw1y_1L7yFs0A"
-RANGE = "Admin_Sheet!A1:Z1000"
+# --- CONFIG ---
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+DEFAULT_SHEET_ID = "1lemebG36uQ9MlbKZC_O2H_ltJZZI8aXFlnWlMbD4MXA"
+RANGE_NAME = "Admin_Sheet!A1:Z2000"
 
-def get_sheet_id(sheet_input: str) -> str:
-    """
-    Accepts full Google Sheet URL OR raw Sheet ID
-    """
-    if "docs.google.com" in sheet_input:
-        match = re.search(r"/d/([a-zA-Z0-9-_]+)", sheet_input)
-        if not match:
-            raise ValueError("Invalid Google Sheet URL")
-        return match.group(1)
-    return sheet_input
 
-# serve the HTML file at the root URL
+def get_google_creds():
+    creds = None
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            return None
+    return creds
+
+
 @app.route("/")
 def index():
-    # ensure `employee_system.html` is in the same directory as `main.py`
-    return send_from_directory(".", "Employee_management_System.html")
+    return send_file("index.html")
+
 
 @app.route("/api/employees")
 def get_employees():
-    sheet_input = request.args.get("sheet")  # URL or ID
+    print("\n--- NEW REQUEST RECEIVED ---")
+    creds = get_google_creds()
+    if not creds:
+        return jsonify({"error": "Authentication failed"}), 500
 
-    if not sheet_input:
-        return jsonify({"error": "sheet parameter required"}), 400
+    sheet_id = request.args.get('sheet', DEFAULT_SHEET_ID)
 
-    sheet_id = get_sheet_id(sheet_input)
+    service = build('sheets', 'v4', credentials=creds)
+    result = service.spreadsheets().values().get(
+        spreadsheetId=sheet_id,
+        range=RANGE_NAME
+    ).execute()
 
-    url = (
-        f"https://sheets.googleapis.com/v4/spreadsheets/"
-        f"{sheet_id}/values/{RANGE}?key={API_KEY}"
-    )
-
-    response = requests.get(url)
-    response.raise_for_status()
-
-    values = response.json().get("values", [])
+    values = result.get('values', [])
     if not values:
         return jsonify([])
 
     headers = values[0]
-    rows = values[1:]
+    print(f"✅ Found {len(values)} rows")
+    print(f"👀 Headers: {headers}")
 
-    data = [dict(zip(headers, row)) for row in rows]
+    data = []
+    for row in values[1:]:
+        row += [''] * (len(headers) - len(row))
+        data.append(dict(zip(headers, row)))
+
     return jsonify(data)
 
+
+@app.route("/health")
+def health():
+    return {"status": "ok"}
+
+
 if __name__ == "__main__":
-    app.run(debug=True)
-app = Flask(__name__)
-API_KEY = "AIzaSyABdKbscWXikb6aO5iHDwNw1y_1L7yFs0A"
-RANGE = "Admin_Sheet!A1:Z1000"
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1lemebG36uQ9MlbKZC_O2H_ltJZZI8aXFlnWlMbD4MXA/edit?gid=0#gid=0"
-def get_sheet_id(sheet_input: str) -> str:
-    """
-    Accepts full Google Sheet URL OR raw Sheet ID
-    """
-    if "docs.google.com" in sheet_input:
-        match = re.search(r"/d/([a-zA-Z0-9-_]+)", sheet_input)
-        if not match:
-            raise ValueError("Invalid Google Sheet URL")
-        return match.group(1)
-    return sheet_input
-@app.route("/api/employees")
-def get_employees():
-    sheet_input = request.args.get("sheet")  # URL or ID
-
-    if not sheet_input:
-        return jsonify({"error": "sheet parameter required"}), 400
-
-    sheet_id = get_sheet_id(sheet_input)
-
-    url = (
-        f"https://sheets.googleapis.com/v4/spreadsheets/"
-        f"{sheet_id}/values/{RANGE}?key={API_KEY}"
-    )
-
-    response = requests.get(url)
-    response.raise_for_status()
-
-    values = response.json()["values"]
-    headers = values[0]
-    rows = values[1:]
-
-    data = [dict(zip(headers, row)) for row in rows]
-    return jsonify(data)
-if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=5000)
